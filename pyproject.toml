@@ -1,0 +1,13 @@
+[project]
+name = "es-energy-trade"
+version = "0.1.0"
+description = "Spain energy imports lakehouse on Azure Databricks"
+requires-python = ">=3.10"
+dependencies = ["requests", "beautifulsoup4", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyspark", "pandas"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

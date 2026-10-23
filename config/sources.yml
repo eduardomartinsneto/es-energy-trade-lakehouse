@@ -1,0 +1,36 @@
+# Metadata-driven source configuration. Values marked TBD are confirmed in Phase 0.
+sources:
+  aeat_max_desagregacion:
+    kind: http_files
+    role: primary source for Spain (all products, all partners)
+    landing_page: https://sede.agenciatributaria.gob.es/Sede/estadisticas/estadisticas-comercio-exterior.html
+    # Verified 2026-10-20: one page per year; it shows ONE month's ZIPs and links to the other months.
+    # Sub-page URLs and ZIP base paths differ by year and month codes in file names are irregular
+    # (en, fb, ..., sp, dc), so links are discovered, never built (ingestion/aeat_discovery.py).
+    year_page: https://sede.agenciatributaria.gob.es/Sede/estadisticas/estadisticas-comercio-exterior/{year}-maxima-desagregacion.html
+    chapter_file_for_energy: "39"   # monthly ZIPs split by CN chapter range; chapter 27 is in the 23-39 file (cgYYmm39)
+    formats:
+      legacy: fixed-width, 226 chars, declaration-level; weight /1000 -> kg, value in euro cents (see docs/decisions.md)
+      new_2026: single cumulative csv ';' no header, 14 cols, aggregated; kg and euros; republished monthly with all months
+    silver_scope: cn_chapter_27
+    start_period: "2019-01"
+
+  aeat_classifications:
+    kind: http_file
+    role: product dimension (CN descriptions)
+    url: https://sede.agenciatributaria.gob.es/static_files/AEAT/Aduanas/Contenidos_Privados/Estadisticas_Comercio_Exterior/Clasi_new_fich.xlsx
+
+  eurostat_comext:
+    kind: rest_api
+    role: EU benchmark + reconciliation for Spain
+    base_url: https://ec.europa.eu/eurostat/api/comext/dissemination
+    dataset: TBD   # monthly CN8 trade dataset
+    reporters: [ES, PT, IT, FR, DE]
+    flow: import
+    start_period: "2019-01"
+
+products:
+  # CN prefixes; expanded to CN8 through dim_product
+  crude_oil: ["2709"]
+  lng: ["271111"]
+  pipeline_gas: ["271121"]
