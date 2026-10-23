@@ -16,6 +16,8 @@ def spark():
         .config("spark.driver.bindAddress", "127.0.0.1")
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.sql.session.timeZone", "UTC")
+        # Databricks serverless runs with ANSI mode on: test under the stricter semantics
+        .config("spark.sql.ansi.enabled", "true")
         .getOrCreate()
     )
     yield session

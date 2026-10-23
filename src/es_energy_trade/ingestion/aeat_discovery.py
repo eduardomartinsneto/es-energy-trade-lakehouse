@@ -51,17 +51,35 @@ def _month_from_path(url: str) -> int | None:
     return None
 
 
-def parse_zip_links(html: str, page_url: str) -> list[ZipLink]:
-    """ZIP links on a page that follow the ``cgYYMMNN.zip`` contract. Anything else is ignored."""
+_TEXT_MONTH = re.compile(r"^\s*(?P<month>[A-Za-z]+)\s+(?P<year>\d{4})\b")
+
+
+def _month_from_text(text: str) -> int | None:
+    """Link text looks like 'Julio 2022 54 al 61(13653 KB - zip ...)'."""
+    m = _TEXT_MONTH.match(text)
+    return MONTHS_ES.get(m["month"].lower()) if m else None
+
+
+def parse_zip_links(html: str, page_url: str, default_month: int | None = None) -> list[ZipLink]:
+    """ZIP links on a page that follow the ``cgYYMMNN.zip`` contract. Anything else is ignored.
+
+    The month comes from the link text, then from the folder in the URL (the site is inconsistent: in July 2022
+    the 54-61 file has no month folder, and the folder is sometimes capitalised), then from ``default_month``
+    (the month of the sub-page being read). If sources disagree, or none gives a month, the link is dropped when
+    it is not the energy file and raises when it is - an energy month we cannot place must stop the run.
+    """
     links = []
     for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
         url = urljoin(page_url, a["href"].strip())
         m = _ZIP_NAME.search(url)
         if not m:
             continue
-        month = _month_from_path(url)
+        found = {x for x in (_month_from_text(a.get_text(" ", strip=True)), _month_from_path(url)) if x}
+        month = found.pop() if len(found) == 1 else (default_month if not found else None)
         if month is None:
-            raise ValueError(f"Cannot read the month from the path of {url}")
+            if m["last"] == ENERGY_FILE_LAST_CHAPTER:
+                raise ValueError(f"Cannot determine the month of {url} (link text {a.get_text(' ', strip=True)!r})")
+            continue
         links.append(
             ZipLink(
                 url=url,
@@ -90,8 +108,8 @@ def discover_year(year: int, fetch: Callable[[str], str]) -> list[ZipLink]:
     url = YEAR_PAGE.format(year=year)
     html = fetch(url)
     links = parse_zip_links(html, url)
-    for month_url in parse_month_links(html, url).values():
-        links.extend(parse_zip_links(fetch(month_url), month_url))
+    for month, month_url in parse_month_links(html, url).items():
+        links.extend(parse_zip_links(fetch(month_url), month_url, default_month=month))
     # sanity: every file must belong to the requested year
     wrong = [link.url for link in links if link.year != year]
     if wrong:

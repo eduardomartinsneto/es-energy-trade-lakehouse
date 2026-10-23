@@ -189,3 +189,6 @@ Checked by reading the year and month pages for 2019, 2024, 2025 and 2026 (page 
 
 ## Environment — Bronze volume (2026-10-20)
 Raw files live in the Unity Catalog volume `portfolio.bronze.raw_files` (`/Volumes/portfolio/bronze/raw_files`): `aeat/legacy/{yyyy-mm}/` (ZIP kept as delivered + unpacked file) and `aeat/csv_2026/snapshot={date}/`.
+
+## Phase 1 findings (2026-10-23) — the AEAT links are irregular inside a single month
+Found when the first Bronze run failed on `.../2022/cg22jl61.zip`. On the July 2022 page, nine of the ten ZIPs sit under `.../2022/Julio/` (capitalised folder) but the 54–61 file sits directly under `.../2022/`, with no month folder. The link text is regular (`Julio 2022 54 al 61(...)`), so the month is now read from the link text first, then the URL folder, then the sub-page being read; conflicting sources are not trusted. An unplaceable link is dropped unless it is the chapter 23–39 file, in which case the run stops. Other irregularities in the 84 months 2019–2025 are possible; they surface as an error naming the URL.

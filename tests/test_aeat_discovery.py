@@ -118,3 +118,35 @@ def test_missing_months_reports_gaps_in_the_requested_range():
     files = energy_files(discover_year(2025, fetch_from(fake_site())))  # Jan and Feb 2025 only
     assert missing_months(files, (2025, 1), (2025, 2)) == []
     assert missing_months(files, (2024, 12), (2025, 3)) == [(2024, 12), (2025, 3)]
+
+
+def test_month_comes_from_link_text_when_the_url_has_no_month_folder():
+    # Real case (July 2022): the 54-61 file has no month folder; others have a capitalised 'Julio' folder.
+    base = OLD + "/2022"
+    html = (
+        f'<a href="{base}/Julio/cg22jl39.zip">Julio 2022 23 al 39(12905 KB - zip (Archivo comprimido))</a>'
+        f'<a href="{base}/cg22jl61.zip">Julio 2022 54 al 61(13653 KB - zip (Archivo comprimido))</a>'
+    )
+    links = {l.last_chapter: l for l in parse_zip_links(html, SITE + "/x.html")}
+    assert links["39"].month == 7 and links["61"].month == 7
+    assert links["61"].month_code == "jl"
+
+
+def test_unplaceable_non_energy_link_is_dropped_but_an_energy_one_raises():
+    base = OLD + "/2022"
+    assert parse_zip_links(f'<a href="{base}/cg22jl61.zip">archivo</a>', SITE + "/x.html") == []
+    with pytest.raises(ValueError, match="Cannot determine the month"):
+        parse_zip_links(f'<a href="{base}/cg22jl39.zip">archivo</a>', SITE + "/x.html")
+
+
+def test_default_month_of_the_subpage_places_a_link_without_other_clues():
+    base = OLD + "/2022"
+    links = parse_zip_links(f'<a href="{base}/cg22jl39.zip">archivo</a>', SITE + "/julio.html", default_month=7)
+    assert [l.month for l in links] == [7]
+
+
+def test_conflicting_month_sources_are_not_trusted():
+    base = OLD + "/2022"
+    html = f'<a href="{base}/Julio/cg22jl39.zip">Agosto 2022 23 al 39(1 KB)</a>'
+    with pytest.raises(ValueError, match="Cannot determine the month"):
+        parse_zip_links(html, SITE + "/x.html")

@@ -11,9 +11,9 @@ N_COLUMNS_2026 = 14
 SCHEMA_2026 = StructType([StructField(f"_c{i}", StringType()) for i in range(N_COLUMNS_2026)])
 
 
-def read_legacy(spark: SparkSession, path: str) -> DataFrame:
+def read_legacy(spark: SparkSession, path: str | list[str]) -> DataFrame:
     """Read legacy fixed-width lines; raise if any line is not exactly 226 characters."""
-    lines = spark.read.text(path).withColumn("_source_file", F.lit(path))
+    lines = spark.read.text(path).select("value", F.col("_metadata.file_path").alias("_source_file"))
     bad = lines.filter(F.length("value") != LEGACY_LINE_LENGTH)
     n_bad = bad.count()
     if n_bad:
@@ -25,7 +25,7 @@ def read_legacy(spark: SparkSession, path: str) -> DataFrame:
     return lines
 
 
-def read_2026(spark: SparkSession, path: str) -> DataFrame:
+def read_2026(spark: SparkSession, path: str | list[str]) -> DataFrame:
     """Read the 2026 CSV with an explicit 14-string-column schema.
 
     FAILFAST: a row with a different number of columns aborts the read instead of being
@@ -37,5 +37,5 @@ def read_2026(spark: SparkSession, path: str) -> DataFrame:
         .option("header", "false")
         .option("mode", "FAILFAST")
         .csv(path)
-        .withColumn("_source_file", F.lit(path))
+        .withColumn("_source_file", F.col("_metadata.file_path"))
     )

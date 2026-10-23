@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = ["requests", "beautifulsoup4", "pyyaml"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyspark", "pandas"]
+dev = ["pytest", "pyspark>=3.5,<4", "pandas"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
