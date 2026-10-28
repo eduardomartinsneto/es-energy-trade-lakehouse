@@ -129,7 +129,9 @@ def energy_files(links: Iterable[ZipLink]) -> list[ZipLink]:
 # --- 2026 cumulative CSV ("nuevo formato") ------------------------------------------------------
 
 CSV_2026_PAGE = "https://sede.agenciatributaria.gob.es/Sede/estadisticas/estadisticas-comercio-exterior/2026.html"
-_CSV_NAME = re.compile(r"MAXIMA_DESAGREGACION_2026\.csv$", re.IGNORECASE)
+# The file name changes between releases (MAXIMA_DESAGREGACION_2026.csv in July, MAXIMA_DESAG_AGOSTO26.csv in August):
+# the stable part is the folder "Nuevo_formato_2026_max_des/<month>/".
+_CSV_NAME = re.compile(r"Nuevo_formato_2026[^?#]*\.csv$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -138,20 +140,49 @@ class CsvLink:
     through_month: int  # last month the file covers, read from the folder in its path (".../julio/...")
 
 
-def find_csv_2026(html: str, page_url: str = CSV_2026_PAGE) -> CsvLink:
-    """The cumulative 2026 CSV link. Its folder is the last covered month, so the URL changes on every release."""
-    urls = {
-        urljoin(page_url, a["href"].strip())
-        for a in BeautifulSoup(html, "html.parser").find_all("a", href=True)
-        if _CSV_NAME.search(a["href"].strip())
-    }
-    if len(urls) != 1:
-        raise ValueError(f"Expected exactly one MAXIMA_DESAGREGACION_2026.csv link, found {sorted(urls)}")
-    url = urls.pop()
-    month = _month_from_path(url)
-    if month is None:
+_CSV_TEXT = re.compile(r"""[^\s"'<>()]*Nuevo_formato_2026[^\s"'<>()]*\.csv""", re.IGNORECASE)
+
+
+def _month_from_name(url: str) -> int | None:
+    """Some releases put the month in the file name too (MAXIMA_DESAG_AGOSTO26.csv); others do not."""
+    stem = url.rsplit("/", 1)[-1].lower()
+    found = {number for name, number in MONTHS_ES.items() if name in stem}
+    return found.pop() if len(found) == 1 else None
+
+
+def _csv_release(url: str) -> CsvLink:
+    from_folder, from_name = _month_from_path(url), _month_from_name(url)
+    if from_folder is None:
         raise ValueError(f"Cannot read the last covered month from the path of {url}")
-    return CsvLink(url=url, through_month=month)
+    if from_name is not None and from_name != from_folder:
+        raise ValueError(f"The folder and the file name disagree about the month: {url}")
+    return CsvLink(url=url, through_month=from_folder)
+
+
+def find_csv_2026(html: str, page_url: str = CSV_2026_PAGE) -> CsvLink:
+    """The current cumulative 2026 CSV. Its folder is the last covered month and its file name changes by release.
+
+    Looks at anchors first and then at the raw text, because the link may be injected by a script or sit in
+    markup that is not a plain ``<a href>``. If the page keeps several releases, the latest month wins; two
+    different files for the same latest month are ambiguous and stop the run.
+    """
+    candidates = {a["href"].strip() for a in BeautifulSoup(html, "html.parser").find_all("a", href=True)
+                  if _CSV_NAME.search(a["href"].strip())}
+    candidates |= set(_CSV_TEXT.findall(html))
+    releases = [_csv_release(urljoin(page_url, c)) for c in sorted(candidates)]
+    if not releases:
+        title = BeautifulSoup(html, "html.parser").title
+        title_text = title.get_text(strip=True) if title else None
+        csv_mentions = re.findall(r"[^\s\"'<>]*[.]csv", html, flags=re.IGNORECASE)[:5]
+        raise ValueError(
+            f"No 2026 cumulative CSV link found. Page: {len(html)} chars, title={title_text!r}, "
+            f".csv mentions={csv_mentions}"
+        )
+    latest = max(r.through_month for r in releases)
+    newest = [r for r in releases if r.through_month == latest]
+    if len(newest) != 1:
+        raise ValueError(f"Several different files for the latest month ({latest}): {[r.url for r in newest]}")
+    return newest[0]
 
 
 def missing_months(files: Iterable[ZipLink], start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:

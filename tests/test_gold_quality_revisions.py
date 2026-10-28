@@ -114,3 +114,24 @@ def test_merge_sql_uses_the_adr012_key_and_counts_revisions_only_on_hash_change(
     assert "WHEN MATCHED AND t._row_hash <> s._row_hash" in sql
     assert "t._revision_count = t._revision_count + 1" in sql
     assert "source_format" not in sql.split("ON ", 1)[1].split("WHEN", 1)[0]   # not part of the key
+
+
+def test_period_floor_gate(spark):
+    from es_energy_trade.quality.gates import check_period_floor
+    ok = silver_df(spark, [("M", date(2026, 1, 1), "27090090", "A", "1", 1, 1)])
+    check_period_floor(ok, "2026-01-01")
+    early = silver_df(spark, [("M", date(2025, 12, 1), "27090090", "A", "1", 1, 1)])
+    with pytest.raises(QualityGateError, match="overlaps the legacy history"):
+        check_period_floor(early, "2026-01-01")
+
+
+def test_release_coverage_gate(spark):
+    from es_energy_trade.quality.gates import check_release_coverage
+    months = lambda *ms: silver_df(spark, [("M", date(2026, m, 1), "27090090", "A", "1", 1, 1) for m in ms])
+    assert check_release_coverage(months(1, 2, 3), claimed_through_month=3) == date(2026, 3, 1)
+    with pytest.raises(QualityGateError, match="missing months"):          # a fragment, not a cumulative file
+        check_release_coverage(months(8))
+    with pytest.raises(QualityGateError, match="missing months"):
+        check_release_coverage(months(1, 3))
+    with pytest.raises(QualityGateError, match="claims to end in month 8"):
+        check_release_coverage(months(1, 2, 3), claimed_through_month=8)

@@ -12,15 +12,16 @@ import sys
 
 sys.path.append(os.path.abspath("../src"))
 
-from es_energy_trade.ingestion.aeat_download import latest_csv_snapshot
+from es_energy_trade.ingestion.aeat_download import ensure_manifest, latest_csv_snapshot
 from es_energy_trade.ingestion.aeat_reader import read_2026, read_legacy
-from es_energy_trade.quality.gates import check_silver
+from es_energy_trade.quality.gates import check_period_floor, check_release_coverage, check_silver
 from es_energy_trade.transforms.aeat import parse_2026, parse_legacy, to_silver
 from es_energy_trade.transforms.revisions import changed_rows
 from es_energy_trade.transforms.silver_merge import create_table_sql, merge_sql
 
 dbutils.widgets.text("volume_root", "/Volumes/portfolio/bronze/raw_files")
 dbutils.widgets.dropdown("source", "legacy", ["legacy", "csv2026"])
+dbutils.widgets.text("snapshot", "latest")  # csv2026 only: "latest" or a snapshot date such as 2026-10-16
 dbutils.widgets.text("silver_table", "portfolio.silver.trade_flows_aeat")
 dbutils.widgets.text("revisions_table", "portfolio.silver.trade_flows_aeat_revisions")
 
@@ -39,8 +40,10 @@ if source == "legacy":
     print(f"{len(files)} legacy monthly files")
     batch = to_silver(parse_legacy(read_legacy(spark, files)))
 else:
-    snapshot = latest_csv_snapshot(volume_root)
-    assert snapshot is not None, "No CSV snapshot in the volume: run notebook 02 first"
+    wanted = dbutils.widgets.get("snapshot")
+    snapshot = (latest_csv_snapshot(volume_root) if wanted == "latest" else
+                pathlib.Path(volume_root, "aeat", "csv_2026", f"snapshot={wanted}", "MAXIMA_DESAGREGACION_2026.csv"))
+    assert snapshot is not None and snapshot.exists(), "No such CSV snapshot in the volume: run notebook 02 first"
     print(f"CSV snapshot: {snapshot}")
     batch = to_silver(parse_2026(read_2026(spark, str(snapshot))))
 
@@ -49,6 +52,10 @@ batch = batch.cache()
 # COMMAND ----------
 # Gates that fail the run (ADR-008)
 print(check_silver(batch))
+if source == "csv2026":
+    check_period_floor(batch, "2026-01-01")  # ADR-015: legacy ZIPs own 2019-2025
+    claimed = ensure_manifest(snapshot)["through_month"]  # None for a snapshot uploaded by hand
+    print("release covers up to", check_release_coverage(batch, "2026-01-01", claimed))
 
 # COMMAND ----------
 # Revisions must be computed BEFORE the MERGE overwrites the old values

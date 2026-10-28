@@ -17,7 +17,7 @@ import sys
 sys.path.append(os.path.abspath("../src"))
 
 from es_energy_trade.ingestion.aeat_discovery import CSV_2026_PAGE, find_csv_2026
-from es_energy_trade.ingestion.aeat_download import download_csv_snapshot, http_fetch
+from es_energy_trade.ingestion.aeat_download import download_csv_snapshot, http_fetch, read_manifest
 
 dbutils.widgets.text("volume_root", "/Volumes/portfolio/bronze/raw_files")
 volume_root = dbutils.widgets.get("volume_root")
@@ -26,5 +26,6 @@ volume_root = dbutils.widgets.get("volume_root")
 link = find_csv_2026(http_fetch(CSV_2026_PAGE), CSV_2026_PAGE)
 print(f"CSV covers January to month {link.through_month}: {link.url}")
 
-path, downloaded = download_csv_snapshot(link.url, volume_root, today=datetime.date.today().isoformat())
+path, downloaded = download_csv_snapshot(link, volume_root, today=datetime.date.today().isoformat())
 print(("downloaded" if downloaded else "unchanged since last snapshot"), path, f"{path.stat().st_size / 1e6:,.0f} MB")
+print(read_manifest(path))

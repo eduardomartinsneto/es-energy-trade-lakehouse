@@ -109,7 +109,7 @@ def test_csv_2026_link_and_last_covered_month():
 
 def test_csv_2026_link_missing_or_ambiguous_fails():
     from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="No 2026 cumulative CSV link"):
         find_csv_2026("<a href='/x.pdf'>nada</a>")
 
 
@@ -150,3 +150,52 @@ def test_conflicting_month_sources_are_not_trusted():
     html = f'<a href="{base}/Julio/cg22jl39.zip">Agosto 2022 23 al 39(1 KB)</a>'
     with pytest.raises(ValueError, match="Cannot determine the month"):
         parse_zip_links(html, SITE + "/x.html")
+
+
+def test_csv_2026_link_found_even_when_it_is_not_an_anchor():
+    from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
+    url = ("https://sede.agenciatributaria.gob.es/static_files/Sede/Tema/Aduanas/Comercio_exterior/"
+           "Nuevo_formato_2026_max_des/julio/MAXIMA_DESAGREGACION_2026.csv")
+    html = f"<html><script>var f = '{url}';</script><a href='{url}'>Enero a Julio</a></html>"  # same URL twice
+    assert find_csv_2026(html).through_month == 7
+
+
+def test_csv_2026_error_describes_what_the_page_contained():
+    from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
+    with pytest.raises(ValueError, match="Page: .* chars"):
+        find_csv_2026("<html><title>Acceso denegado</title><a href='/otro.csv'>x</a></html>")
+
+
+def test_csv_2026_link_survives_a_renamed_file_in_a_new_release():
+    from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
+    # August 2026 release (seen in the raw page): relative href, different file name, new month folder
+    html = ('<a href="/static_files/Sede/Tema/Aduanas/Comercio_exterior/Nuevo_formato_2026_max_des/agosto/'
+            'MAXIMA_DESAG_AGOSTO26.csv">Enero a Agosto</a>')
+    link = find_csv_2026(html)
+    assert link.through_month == 8
+    assert link.url == ("https://sede.agenciatributaria.gob.es/static_files/Sede/Tema/Aduanas/Comercio_exterior/"
+                        "Nuevo_formato_2026_max_des/agosto/MAXIMA_DESAG_AGOSTO26.csv")
+
+
+CSV_BASE = "https://sede.agenciatributaria.gob.es/static_files/Sede/Tema/Aduanas/Comercio_exterior/Nuevo_formato_2026_max_des"
+
+
+def test_csv_2026_latest_release_wins_when_the_page_keeps_older_ones():
+    from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
+    html = (f'<a href="{CSV_BASE}/julio/MAXIMA_DESAGREGACION_2026.csv">Enero a Julio</a>'
+            f'<a href="{CSV_BASE}/agosto/MAXIMA_DESAG_AGOSTO26.csv">Enero a Agosto</a>')
+    link = find_csv_2026(html)
+    assert (link.through_month, link.url.rsplit("/", 1)[-1]) == (8, "MAXIMA_DESAG_AGOSTO26.csv")
+
+
+def test_csv_2026_two_files_for_the_latest_month_are_ambiguous():
+    from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
+    html = (f'<a href="{CSV_BASE}/agosto/A.csv">a</a><a href="{CSV_BASE}/agosto/B.csv">b</a>')
+    with pytest.raises(ValueError, match="Several different files"):
+        find_csv_2026(html)
+
+
+def test_csv_2026_folder_and_file_name_must_agree_on_the_month():
+    from es_energy_trade.ingestion.aeat_discovery import find_csv_2026
+    with pytest.raises(ValueError, match="disagree"):
+        find_csv_2026(f'<a href="{CSV_BASE}/julio/MAXIMA_DESAG_AGOSTO26.csv">x</a>')
