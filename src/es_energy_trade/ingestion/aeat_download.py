@@ -144,6 +144,8 @@ def download_csv_snapshot(link, volume_root: str, today: str, session: requests.
     """
     import time
 
+    if not hasattr(link, "url") or not hasattr(link, "through_month"):
+        raise TypeError("download_csv_snapshot needs the CsvLink returned by find_csv_2026(), not its URL as text")
     http = session or requests.Session()
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):

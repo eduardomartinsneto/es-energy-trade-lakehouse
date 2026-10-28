@@ -139,3 +139,8 @@ def test_a_snapshot_put_there_by_hand_gets_a_manifest_from_its_content(tmp_path)
     m = ensure_manifest(f)
     assert m["origin"] == "manual_upload" and m["through_month"] is None
     assert json.loads((folder / "manifest.json").read_text())["sha256"] == m["sha256"]
+
+
+def test_passing_the_url_instead_of_the_link_fails_with_a_clear_message(tmp_path):
+    with pytest.raises(TypeError, match="CsvLink"):
+        download_csv_snapshot(AUGUST.url, str(tmp_path), "2026-10-28", CsvSession(b"x"))
