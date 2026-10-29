@@ -7,7 +7,7 @@ from pyspark.sql import functions as F
 from es_energy_trade.quality.gates import QualityGateError, check_silver
 from es_energy_trade.transforms.aeat import SILVER_KEY, parse_2026, to_silver
 from es_energy_trade.transforms.gold import energy_imports_monthly, supply_concentration
-from es_energy_trade.transforms.revisions import changed_rows
+from es_energy_trade.transforms.revisions import changed_rows, vanished_rows
 from es_energy_trade.transforms.silver_merge import merge_sql
 
 COLS = ["flow", "period", "reporter_iso2", "cn8", "partner_code_src", "transport_mode",
@@ -50,6 +50,21 @@ def test_energy_imports_monthly(silver):
     assert a.share_of_weight == pytest.approx(0.6)             # 60 of 100 kt
     assert rows[("crude_oil", "B")].implied_price_eur_per_t == D("600.00")
     assert rows[("pipeline_gas", "DZ")].share_of_weight == pytest.approx(1.0)
+
+
+def test_implied_price_needs_a_minimum_volume(spark):
+    """ADR-016: below 1,000 t per origin-month the price is NULL; weight, value and shares stay."""
+    df = silver_df(spark, [
+        ("M", P, "27090090", "BIG", "1", 1_000_000, 500_000),     # exactly 1,000 t: reported
+        ("M", P, "27090090", "TINY", "1", 999_999, 5_000_000),    # 999.999 t at an absurd price: withheld
+    ])
+    rows = {r.origin_code: r for r in energy_imports_monthly(df).collect()}
+    assert rows["BIG"].implied_price_eur_per_t == D("500.00")
+    assert rows["TINY"].implied_price_eur_per_t is None
+    assert rows["TINY"].value_eur == D("5000000.00")           # the flow is still counted
+    assert rows["TINY"].share_of_weight == pytest.approx(0.499999750000125)
+    assert energy_imports_monthly(df, min_weight_for_price_kg=0).filter("origin_code='TINY'").first() \
+        .implied_price_eur_per_t is not None
 
 
 def test_supply_concentration(silver):
@@ -135,3 +150,38 @@ def test_release_coverage_gate(spark):
         check_release_coverage(months(1, 3))
     with pytest.raises(QualityGateError, match="claims to end in month 8"):
         check_release_coverage(months(1, 2, 3), claimed_through_month=8)
+
+
+# --- vanished keys (ADR-017) -----------------------------------------------------------------
+
+def _with_hash_and_format(df, fmt):
+    return (df.withColumn("source_format", F.lit(fmt))
+              .withColumn("_row_hash", F.sha2(F.concat_ws("|", F.col("weight_kg").cast("string"), F.col("value_eur").cast("string")), 256)))
+
+
+def test_vanished_rows_are_target_keys_missing_from_a_full_release_of_the_same_format(spark):
+    target = _with_hash_and_format(silver_df(spark, [
+        ("M", P, "27111100", "MR", "1", 1_000_000, 500_000),
+        ("M", P, "27111100", "DZ", "1", 2_000_000, 900_000),
+    ]), "2026").unionByName(_with_hash_and_format(silver_df(spark, [
+        ("M", date(2024, 1, 1), "27090090", "US", "1", 3_000_000, 1_000_000),      # legacy history: never touched
+    ]), "legacy"))
+    release = _with_hash_and_format(silver_df(spark, [("M", P, "27111100", "DZ", "1", 2_000_000, 900_000)]), "2026")
+
+    out = vanished_rows(release, target, "2026").collect()
+    assert [(r.partner_code_src, r._change_type, r.weight_kg_new) for r in out] == [("MR", "vanished", None)]
+    assert out[0].weight_kg_old == D("1000000.000")
+
+
+def test_merge_sql_deletes_missing_rows_only_when_asked():
+    plain = merge_sql("t", "b")
+    assert "NOT MATCHED BY SOURCE" not in plain
+    scoped = merge_sql("t", "b", "t.source_format = '2026'")
+    assert scoped.endswith("WHEN NOT MATCHED BY SOURCE AND t.source_format = '2026' THEN DELETE")
+
+
+def test_vanished_share_gate():
+    from es_energy_trade.quality.gates import check_vanished_share
+    check_vanished_share(9, 14_366)                                   # 0.06 %
+    with pytest.raises(QualityGateError, match="truncated"):
+        check_vanished_share(500, 14_366)

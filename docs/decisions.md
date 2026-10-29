@@ -200,3 +200,60 @@ Found when the first Bronze run failed on `.../2022/cg22jl61.zip`. On the July 2
 - *Storage:* every real change is a `snapshot=YYYY-MM-DD[-n]/` folder (never overwritten) with a `manifest.json` (URL, last covered month, size, **SHA-256**, ETag, Last-Modified, download time, origin). The on-disk name is fixed (`MAXIMA_DESAGREGACION_2026.csv`) whatever the release called it. A download is skipped only when ETag or Last-Modified prove it is the same file; byte-identical content under a new URL is discarded; size alone is never proof. Transient network failures are retried; a truncated file is deleted. A snapshot placed by hand gets its manifest from its content.
 - *Silver gates for the CSV:* no period before 2026-01 (the legacy ZIPs own 2019–2025); every month from 2026-01 to the release's last month must be present (this is what proves the file is cumulative, instead of assuming it) and the last month must match what the URL claims.
 **Open until checked on the data:** whether the August file really is cumulative (Jan–Aug). The coverage gate will say.
+
+## Phase 1 findings (2026-10-29) — format break measured on January 2026 (the check ADR-015 left pending)
+January 2026 exists in both formats: legacy ZIP `cg26en39` and the cumulative CSV (July vintage, Jan–Jul). Both were run through the same parsers (`parse_legacy` / `parse_2026` → `to_silver` → `energy_imports_monthly`) and compared, imports only. Script and inputs are local (`data/samples/`, not committed).
+
+| Product | Legacy ZIP | CSV | Legacy / CSV (weight) |
+|---|---|---|---|
+| Crude oil (2709) | 4,669.4 kt · EUR 1,874.9 M | 4,639.8 kt · EUR 1,884.0 M | 1.006 |
+| LNG (271111) | 1,440.5 kt · EUR 579.4 M | 1,422.1 kt · EUR 587.1 M | 1.013 |
+| Pipeline gas (271121) | 465.3 kt · EUR 172.3 M | 532.0 kt · EUR 198.0 M | 0.875 |
+
+- **Crude and LNG are continuous across the break** (within about 1% in weight; same origins in both). The January 2026 LNG concentration spike (US ≈ 71% of weight) is present in the legacy file too, so it is not a CSV artefact.
+- **Pipeline gas is not**: the CSV is 14.5% higher, entirely from Algeria (legacy 459.6 kt vs CSV 526.3 kt). Cause unknown: wider scope of the new format, or a revision between the legacy publication and the CSV vintage; this comparison cannot tell them apart. Treat the pipeline-gas level before and after January 2026 as not strictly comparable.
+- Crude from Italy differs (legacy 125.5 kt, CSV 98.2 kt); other crude origins are identical to the tonne.
+- The residual partner codes are not stable between formats (`QU` in legacy, `QW` in the CSV for the same tiny pipeline flow); small, but a phantom origin change at the break is possible.
+- **Exact duplicate lines are normal in the legacy files** (6.1% of chapter-27 lines in Jan 2025, 7.3% in Jan 2026): identical declarations. They are summed, not removed; removing them would break the agreement with the CSV above.
+- **The doubling of the ZIP size from September 2025 is not chapter 27**: chapter-27 lines grew from 21,849 (Jan 2025) to 26,515 (Jan 2026), +21%, while the whole 23–39 file doubled (749k to 1.45M lines).
+- **September 2025 note (AEAT):** the files published on 17 November 2025 were incomplete because of an error generating them; users who downloaded before 5 December 2025 must download again. The Bronze files were downloaded in October 2026, so they should be the corrected version (not proven from the files). In the Gold, September 2025 crude and LNG look normal but pipeline gas is 220 kt against 430–590 kt in neighbouring months. **Unexplained; do not state a cause.**
+- **Implied price per origin is not usable for small flows** (e.g. a UK crude row of 11.8 kg at EUR 17,905/t). The quarantine of ADR-008 is not implemented; until it is, show price only at product level or above a minimum volume.
+
+## ADR-016 — Implied price is withheld below 1,000 t per origin-month (2026-10-29)
+**Context.** `implied_price_eur_per_t = value / weight` is only meaningful when the flow is large. Measured on the Silver export (2019-01..2026-08, imports only), the maximum origin-month price before any rule was 8.5 million EUR/t (crude oil), 2.8 million EUR/t (LNG) and 12.35 billion EUR/t (pipeline gas). A Power BI average or max over that column would be dominated by a handful of near-zero-weight rows. ADR-008 planned a quarantine for these rows; that was never implemented.
+
+**Decision.** `energy_imports_monthly` sets `implied_price_eur_per_t` to NULL when the origin-month weight is below `MIN_WEIGHT_FOR_PRICE_KG` = 1,000,000 kg (1,000 t; parameter `min_weight_for_price_kg`). The rows stay: weight, value, `share_of_weight`, HHI and `n_origins` are unchanged. The rule lives in Gold (`gold.py`), not in DAX.
+
+**Effect, measured.** 348 of 2,937 origin-months lose their price. They carry 0.0008 % of crude-oil weight, 0.0076 % of LNG and 0.0377 % of pipeline gas. Maximum price afterwards: 2,106 (crude), 3,593 (LNG), 1,689 (pipeline gas) EUR/t.
+
+**What the rule does not do.**
+- 1,000 t is a judgment, not a derived value. Raising it to 10,000 t would drop another 32 crude, 17 LNG and 86 pipeline-gas origin-months and barely move the crude/LNG maxima, so the choice is not sensitive for those two; it is for pipeline gas, where a few origins carry most of the volume.
+- It is deliberately not a price band. The low prices left in the data are real (crude 68.8 EUR/t for Italy in May 2020; the April–May 2020 oil crash) and so are the high LNG prices of 2022 (up to 3,593 EUR/t). A fixed band would delete exactly the periods that make the series interesting.
+- Some small crude flows still show 1,000–2,100 EUR/t (FR, NL, DK, MT; 3–35 kt, 2022–2024). The cause is not established and no explanation is stated.
+
+## Findings (2026-10-29, continued) — Silver export, revisions and September 2025
+- **Reproducibility.** Re-running the repository's `energy_imports_monthly` on the exported Silver (141,878 rows: 127,512 legacy 2019-01..2025-12, 14,366 from the 2026 CSV 2026-01..2026-08) reproduces the Gold table exported from Databricks: 2,937 rows, 0 differences (before ADR-016).
+- **Revisions (July vs August 2026 vintage of the CSV).** 195 rows changed, all in periods 2026-01..2026-07: 122 imports, 73 exports. Rows per month: Jan 10, Feb 16, Mar 21, Apr 16, May 25, Jun 33, Jul 74. Sum of absolute value changes: about 649 M EUR (imports), 101 M EUR (exports). Median relative change of value is 2.6 %, the 90th percentile 91 %, the 99th percentile 3,193 % (very small rows). Revisions are therefore concentrated in the most recent months but also reach January.
+- **Project products.** Examples in imports: crude Mexico June 403 → 590 kt (+46 %), Mexico July 561 → 706 kt, US July 813 → 907 kt, Algeria July 487 → 395 kt (−92 kt); LNG US March 764 → 831 kt. LNG Mauritania and Senegal in March each lose almost exactly the same weight (about 8.02 kt, with the value falling by about 5.8 M EUR in each); the reason is not known. Two project-product rows (June, NG and RU LNG) changed with identical weight and value; `_row_hash` also covers supplementary units, which was not inspected.
+- **Consequence.** A dashboard built on the latest CSV is not final for at least the previous six months. The README must say so; `_revision_count` and the revisions table are the evidence.
+- **September 2025, pipeline gas.** 220 kt against 520 kt (Aug) and 428 kt (Oct). Algeria is 219 kt (508 / 424 around it); the rows coded NO and QU present in August are absent. Total chapter-27 import rows that month are normal (754 vs 638–742 around it), so a missing file is not the explanation. Value falls with weight (about 374 EUR/t against 412 and 386), so it does not look like a unit error either. A partial omission or a real drop cannot be told apart with this data alone. Pedro compared September 2025 against another source (not recorded which) and the 220 kt matches, so this is not a Bronze or parsing defect. Whether that source is independent of the AEAT declarations was not checked, and the reason for the drop itself is not established.
+
+## ADR-015 addendum (2026-10-29) — keys that vanish between CSV releases are not removed (defect, open)
+**Observation.** The `MERGE` in `silver_merge.py` has no `WHEN NOT MATCHED BY SOURCE` branch, so a key present in the July release and absent from the August release stays in Silver. ADR-015 says the CSV is the source of truth for 2026; that is not what the table does in this case.
+
+**Size, from the run outputs and the export (no access to the August file here).**
+- Silver 2026 rows after the August run: 14,366. August batch rows (gate output): 14,357, with 0 duplicate keys. Difference: 9 Silver rows that the latest release does not contain.
+- Consistent with the merge result: 12,522 rows still sourced from the July snapshot, 195 updated, 1,649 inserted = 1,628 rows of period 2026-08 plus 21 new keys in earlier periods. July batch = 12,522 + 195 = 12,717; 12,717 + 21 − 9 = 12,729 = August keys in periods up to July.
+- What the 9 rows are is not known (a re-keyed row, a removed row, a changed partner or transport code?). The 21 new keys in earlier periods may be the other half of the same effect; that is a hypothesis.
+
+**Identified (2026-10-29, against the August file, SHA-256 f7482742…, same as the manifest).** Re-parsing the August CSV with the repository code gives 14,357 rows; all 14,357 keys exist in Silver with identical weight and value (0 differences). The 9 extra Silver rows are:
+- imports, May 2026: LNG Mauritania 32.0 kt (EUR 22.6 M) and LNG Senegal 34.0 kt (EUR 20.1 M), CN 27111291 from the US 28.0 kt (EUR 18.5 M), CN 27129011 China 13.8 t; July 2026: CN 27079999 Azerbaijan 1.8 kt, CN 27101211 Egypt 32.5 kt. Imports total 128.4 kt, EUR 81.2 M.
+- exports: May CN 27132000 Ireland 7.4 kt, June CN 27112900 France 2.6 kt, July CN 27111100 partner QW 3.3 kt. Total 13.3 kt, EUR 6.2 M.
+- The 21 keys inserted in earlier periods by the August run are almost all exports (Netherlands LNG, UK, Algeria, US, Turkey…) and do not pair with the 9 vanished keys by period, product and partner. The "re-keyed rows" hypothesis is not supported; why AEAT dropped them is unknown.
+- Gold effect: only LNG May 2026 changes. Total 1,216 kt → 1,150 kt (−5.4 %), origins 8 → 6, HHI 2,692 → 2,993, top-1 share 41.1 % → 43.4 %. Mauritania and Senegal also lost about 8 kt each in March (see revisions above), so both flows moved between the July and August releases.
+
+## ADR-017 — Keys missing from the latest CSV release are deleted, after being logged (2026-10-29)
+**Decision.** For `source = csv2026` the MERGE gets `WHEN NOT MATCHED BY SOURCE AND t.source_format = '2026' THEN DELETE`, which makes the CSV the source of truth as ADR-015 states. Before the MERGE, `vanished_rows` writes the keys about to disappear to `trade_flows_aeat_revisions` (`_change_type = 'vanished'`, `*_new` columns NULL; `changed_rows` now writes `'revised'`; the 195 rows written before this change have `_change_type` NULL and are revisions). Never used for legacy loads (a legacy batch covers a few months, not the whole format).
+**Guard.** `check_vanished_share` fails the run if more than 1 % of the existing 2026 rows would vanish (a truncated file would otherwise wipe Silver). The August case is 9 of 14,366 rows (0.06 %).
+**Verification, honestly.** `vanished_rows`, the gate and the generated SQL are unit-tested locally (56 tests). The MERGE with `NOT MATCHED BY SOURCE` was NOT executed on Delta: the Databricks credits expired before the change was made. The syntax is Delta SQL (DBR 12.2+); it is untested here.
+**What the offline data is.** `data/silver_offline/trade_flows_aeat.csv` = legacy rows from the Databricks export + 2026 rows rebuilt from the August file by the same functions. `data/gold_offline/*` is built from it with ADR-016. The Delta tables in the (expiring) workspace still contain the 9 rows and no ADR-016 rule; they are not what the report shows.
