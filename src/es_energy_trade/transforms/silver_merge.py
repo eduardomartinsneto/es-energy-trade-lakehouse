@@ -28,10 +28,12 @@ CREATE TABLE IF NOT EXISTS {target} (
 ) USING DELTA""".strip()
 
 
-def merge_sql(target: str, source_view: str) -> str:
+def merge_sql(target: str, source_view: str, delete_missing_where: str | None = None) -> str:
     """Insert new keys; update (and count a revision) only when the measures' hash changed.
 
     Identical re-deliveries match and change nothing, so they are not revisions.
+    ``delete_missing_where`` (ADR-017): a condition on the target, e.g. ``t.source_format = '2026'``. Target rows
+    that satisfy it and are absent from the source are deleted. Only for full releases of that format.
     """
     on = " AND ".join(f"t.{c} = s.{c}" for c in SILVER_KEY)
     update = ",\n    ".join([
@@ -46,6 +48,7 @@ def merge_sql(target: str, source_view: str) -> str:
     ])
     cols = ", ".join(_SOURCE_COLS + ["_first_loaded_at", "_last_updated_at", "_revision_count"])
     vals = ", ".join([f"s.{c}" for c in _SOURCE_COLS] + ["current_timestamp()", "current_timestamp()", "0"])
+    delete = f"\nWHEN NOT MATCHED BY SOURCE AND {delete_missing_where} THEN DELETE" if delete_missing_where else ""
     return f"""
 MERGE INTO {target} AS t
 USING {source_view} AS s
@@ -53,4 +56,4 @@ ON {on}
 WHEN MATCHED AND t._row_hash <> s._row_hash THEN UPDATE SET
     {update}
 WHEN NOT MATCHED THEN INSERT ({cols})
-VALUES ({vals})""".strip()
+VALUES ({vals}){delete}""".strip()

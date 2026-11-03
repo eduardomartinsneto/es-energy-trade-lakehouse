@@ -1,6 +1,15 @@
 # Spain Energy Imports Lakehouse
 
-> 🚧 **Work in progress** — design finished, implementation starting (October 2026). Sections marked *pending* will be filled only with results the pipeline actually produces.
+> 🚧 **Work in progress (v1, November 2026).** Sections marked *pending* will be filled only with results the pipeline actually produces.
+
+## Status
+| Implemented and unit-tested (`pytest`, GitHub Actions) | Pending for v1 |
+|---|---|
+| AEAT file discovery and download (legacy fixed-width and 2026 CSV formats) | Eurostat client and `eu_benchmark` |
+| Bronze → Silver parsers into a harmonised schema | Quarantine of implausible values and `revisions_summary` table |
+| Silver `MERGE` with row hashing; detection of changed and vanished rows | Power BI report |
+| Quality gates: duplicate and null keys, negative values, period floor, release coverage, share of vanished rows | Pipeline-health dashboard |
+| Gold: `energy_imports_monthly` and `supply_concentration` (HHI) | Scheduled Lakeflow Job with Asset Bundles |
 
 **Question:** where does Spain import its crude oil and natural gas from, and how has that supply mix changed since 2022?
 

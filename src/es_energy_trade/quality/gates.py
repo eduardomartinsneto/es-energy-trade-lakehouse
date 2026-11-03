@@ -57,3 +57,11 @@ def check_release_coverage(df: DataFrame, start: str = "2026-01-01", claimed_thr
     if claimed_through_month is not None and last.month != claimed_through_month:
         raise QualityGateError(f"The release claims to end in month {claimed_through_month} but the data ends in {last}")
     return last
+
+
+def check_vanished_share(n_vanished: int, n_scope: int, max_share: float = 0.01) -> None:
+    """ADR-017 guard: a release that makes more than ``max_share`` of the existing rows vanish is probably truncated."""
+    if n_scope and n_vanished / n_scope > max_share:
+        raise QualityGateError(
+            f"{n_vanished} of {n_scope} existing rows are missing from the release "
+            f"({n_vanished / n_scope:.2%} > {max_share:.2%}); refusing to delete. Is the file truncated?")

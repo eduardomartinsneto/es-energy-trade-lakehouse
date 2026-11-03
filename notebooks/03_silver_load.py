@@ -12,6 +12,8 @@ import sys
 
 sys.path.append(os.path.abspath("../src"))
 
+from pyspark.sql import functions as F
+
 from es_energy_trade.ingestion.aeat_download import ensure_manifest, latest_csv_snapshot
 from es_energy_trade.ingestion.aeat_reader import read_2026, read_legacy
 from es_energy_trade.quality.gates import check_period_floor, check_release_coverage, check_silver
@@ -65,12 +67,25 @@ run_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 revised = changed_rows(batch, spark.table(silver_table))
 n_revised = revised.count()
 if n_revised:
-    from pyspark.sql import functions as F
     (revised.withColumn("_run_at", F.lit(run_at).cast("timestamp"))
         .write.mode("append").option("mergeSchema", "true").saveAsTable(revisions_table))
 print(f"{n_revised} revised rows recorded in {revisions_table}")
 
+# ADR-017: for the CSV (source of truth for 2026) a key missing from the latest release is removed, after being logged
+delete_where = None
+if source == "csv2026":
+    from es_energy_trade.quality.gates import check_vanished_share
+    from es_energy_trade.transforms.revisions import vanished_rows
+    vanished = vanished_rows(batch, spark.table(silver_table), "2026")
+    n_vanished = vanished.count()
+    check_vanished_share(n_vanished, spark.table(silver_table).filter("source_format = '2026'").count())
+    if n_vanished:
+        (vanished.withColumn("_run_at", F.lit(run_at).cast("timestamp"))
+            .write.mode("append").option("mergeSchema", "true").saveAsTable(revisions_table))
+    print(f"{n_vanished} vanished rows recorded in {revisions_table} and deleted by the MERGE")
+    delete_where = "t.source_format = '2026'"
+
 # COMMAND ----------
 batch.createOrReplaceTempView("silver_batch")
-result = spark.sql(merge_sql(silver_table, "silver_batch")).collect()[0].asDict()
-print(result)  # num_affected_rows / num_updated_rows / num_inserted_rows
+result = spark.sql(merge_sql(silver_table, "silver_batch", delete_where)).collect()[0].asDict()
+print(result)  # num_affected_rows / num_updated_rows / num_inserted_rows / num_deleted_rows
