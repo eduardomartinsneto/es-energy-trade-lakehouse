@@ -6,7 +6,7 @@ from pyspark.sql import functions as F
 
 from es_energy_trade.quality.gates import QualityGateError, check_silver
 from es_energy_trade.transforms.aeat import SILVER_KEY, parse_2026, to_silver
-from es_energy_trade.transforms.gold import energy_imports_monthly, supply_concentration
+from es_energy_trade.transforms.gold import energy_imports_monthly, revisions_summary, supply_concentration
 from es_energy_trade.transforms.revisions import changed_rows, vanished_rows
 from es_energy_trade.transforms.silver_merge import merge_sql
 
@@ -75,6 +75,14 @@ def test_supply_concentration(silver):
     assert crude.n_origins == 3
     assert crude.total_weight_kg == D("100000000.000")
     assert conc["pipeline_gas"].hhi == pytest.approx(10000.0)  # single origin = maximum concentration
+    assert crude.implied_price_eur_per_t == D("520.00")        # EUR 52 M over 100,000 t, not an average of the origin prices
+    assert conc["pipeline_gas"].implied_price_eur_per_t == D("400.00")
+
+
+def test_product_price_is_withheld_below_the_minimum_volume(spark):
+    small = silver_df(spark, [("M", P, "27111100", "DZ", "1", 500_000, 200_000)])   # 500 t in the month
+    row = supply_concentration(energy_imports_monthly(small)).collect()[0]
+    assert row.total_weight_kg == D("500000.000") and row.implied_price_eur_per_t is None
 
 
 # --- quality gates ---------------------------------------------------------------------------
@@ -185,3 +193,56 @@ def test_vanished_share_gate():
     check_vanished_share(9, 14_366)                                   # 0.06 %
     with pytest.raises(QualityGateError, match="truncated"):
         check_vanished_share(500, 14_366)
+
+
+# --- revisions_summary -----------------------------------------------------------------------
+
+M26 = date(2026, 5, 1)
+
+
+@pytest.fixture
+def revisions_and_silver(spark):
+    """One run (2026-10-28) over May 2026: a revised crude row, a vanished LNG row, a revised refined-product row."""
+    target = _with_hash_and_format(silver_df(spark, [
+        ("M", M26, "27090090", "IT", "1", 10_000_000, 5_000_000),
+        ("M", M26, "27090090", "US", "1", 20_000_000, 10_000_000),     # unchanged: not a revision
+        ("M", M26, "27111100", "MR", "1", 1_000_000, 500_000),         # absent from the release: vanished
+        ("M", M26, "27101981", "BR", "1", 1_000_000, 300_000),         # refined product -> product "other"
+    ]), "2026")
+    release = _with_hash_and_format(silver_df(spark, [
+        ("M", M26, "27090090", "IT", "1", 10_100_000, 5_500_000),      # +100 t, +EUR 500,000
+        ("M", M26, "27090090", "US", "1", 20_000_000, 10_000_000),
+        ("M", M26, "27101981", "BR", "1", 1_000_000, 250_000),         # -EUR 50,000
+    ]), "2026")
+    log = changed_rows(release, target).unionByName(vanished_rows(release, target, "2026"))
+    log = log.withColumn("_run_at", F.lit("2026-10-28 22:59:33").cast("timestamp"))
+    return log, release            # the release is what Silver holds after the MERGE
+
+
+def test_revisions_summary_counts_sizes_and_lag(revisions_and_silver):
+    log, silver_after = revisions_and_silver
+    rows = {r.product: r for r in revisions_summary(log, silver=silver_after).collect()}
+    assert set(rows) == {"crude_oil", "lng", "other"}
+
+    crude = rows["crude_oil"]
+    assert (crude.n_revised, crude.n_vanished, crude.months_after_period) == (1, 0, 5)   # Oct run, May data
+    assert crude.value_delta_eur == D("500000.00") and crude.weight_delta_kg == D("100000.000")
+    assert crude.period_value_eur == D("15500000.00")
+    assert crude.abs_value_delta_share_of_month == pytest.approx(500_000 / 15_500_000)
+
+    lng = rows["lng"]                                         # vanished: the whole old value is lost
+    assert (lng.n_revised, lng.n_vanished) == (0, 1)
+    assert lng.value_delta_eur == D("-500000.00") and lng.abs_value_delta_eur == D("500000.00")
+    assert lng.abs_value_delta_share_of_month is None         # nothing left in the month to compare against
+
+    other = rows["other"]                                     # negative revisions count by absolute size
+    assert other.value_delta_eur == D("-50000.00") and other.abs_value_delta_eur == D("50000.00")
+    assert other.abs_value_delta_share_of_month == pytest.approx(0.2)
+
+
+def test_revisions_summary_handles_logs_without_change_type_and_without_silver(revisions_and_silver):
+    log, _ = revisions_and_silver
+    old_style = log.filter(F.col("_change_type") == "revised").drop("_change_type")   # rows logged before ADR-017
+    rows = revisions_summary(old_style).collect()
+    assert sum(r.n_revised for r in rows) == 2 and sum(r.n_vanished for r in rows) == 0
+    assert all(r.abs_value_delta_share_of_month is None for r in rows)

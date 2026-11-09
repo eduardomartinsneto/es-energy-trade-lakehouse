@@ -257,3 +257,42 @@ January 2026 exists in both formats: legacy ZIP `cg26en39` and the cumulative CS
 **Guard.** `check_vanished_share` fails the run if more than 1 % of the existing 2026 rows would vanish (a truncated file would otherwise wipe Silver). The August case is 9 of 14,366 rows (0.06 %).
 **Verification, honestly.** `vanished_rows`, the gate and the generated SQL are unit-tested locally (56 tests). The MERGE with `NOT MATCHED BY SOURCE` was NOT executed on Delta: the Databricks credits expired before the change was made. The syntax is Delta SQL (DBR 12.2+); it is untested here.
 **What the offline data is.** `data/silver_offline/trade_flows_aeat.csv` = legacy rows from the Databricks export + 2026 rows rebuilt from the August file by the same functions. `data/gold_offline/*` is built from it with ADR-016. The Delta tables in the (expiring) workspace still contain the 9 rows and no ADR-016 rule; they are not what the report shows.
+
+## ADR-018 — Environment after the Azure credits: a Databricks free trial, not tied to Azure (2026-11-03)
+**Context.** The Azure credits expired on 2026-10-29. The decision point of 2026-10-28 (`plan.md`) ended with **no upgrade to pay-as-you-go**; Silver and Gold were exported to local CSV first (`data/exports/`). Phases 1–2 ran on the Azure Databricks workspace of ADR-004/013; its Delta tables are not the source of the figures this project reports (ADR-017: the offline files are).
+**Decision.** The next Databricks runs use a **Databricks free trial account that is not tied to Azure**. Everything that can be built and verified without a workspace (tests, Gold logic, `revisions_summary`, Power BI on the offline Gold) is done first; the trial workspace is created afterwards, for a short, planned verification pass (see `plan.md`).
+**What this changes.**
+- ADR-004 (Azure + ADLS Gen2 + Access Connector) and ADR-013 (hybrid workspace, 4-vCPU quota, no-NAT setup) no longer describe the environment. Storage will be whatever the trial workspace provides for Unity Catalog; the Bronze notebooks already address a Unity Catalog volume (`/Volumes/portfolio/bronze/raw_files`), not an ADLS path.
+- The USD 20/month ceiling no longer applies in the same form; the rule "nothing always on" stays.
+**Not known yet (record here when the workspace exists).** Trial length and expiry date, which compute types are available (serverless or classic), whether Unity Catalog volumes, Lakeflow Jobs, Asset Bundles and AI/BI dashboards are enabled, and any data-size limit. Nothing in this entry should be read as a statement about them.
+**Consequence for the first run.** Bronze raw ZIPs for 2019–2025 are not in the repository (only two samples are in `data/samples/`). Options when the time comes: load the exported Silver (141,878 rows) as a Delta table and run Gold from there, or re-download Bronze locally and upload it; the first does not exercise the legacy path.
+**What the first run must verify.** The `MERGE ... WHEN NOT MATCHED BY SOURCE` of ADR-017, which is unit-tested but has never run on Delta; Gold including `revisions_summary`; the scheduled job and the Asset Bundle.
+**Rejected.** Upgrading the Azure subscription to pay-as-you-go (decided against on 2026-10-29).
+
+## ADR-019 — `revisions_summary`: grain, delta rules and limits (2026-11-03)
+**Decision.** `revisions_summary` is built in Gold (`gold.py::revisions_summary`) from the Silver revisions log. Grain: **run × reference month × flow × product**, with `product = 'other'` for CN codes outside the three project products. This extends the grain of ADR-008 (month × run) with flow and product so the revisions can be read for crude oil, LNG and pipeline gas separately.
+**Measures.** `n_revised`, `n_vanished`; `value_old_eur`, `value_delta_eur` (signed), `abs_value_delta_eur` (sum of absolute row-level changes), and the same for weight; `months_after_period`; `period_value_eur` and `abs_value_delta_share_of_month`.
+**Rules.**
+- A revised row's delta is `new − old`. A vanished row (ADR-017) has no new measures, so its delta is `0 − old`: the whole old value counts as lost.
+- Log rows written before `_change_type` existed (the 195 rows of the 2026-10-28 run) count as revised.
+- `abs_value_delta_share_of_month` divides by the month's value in the **current** Silver (after the run). It is a size indicator, not an exact percentage; it is NULL when no row of that month/flow/product is left (for example a month whose only LNG rows vanished).
+- Rows whose delta is zero in weight and value but whose hash changed (supplementary units changed) count in `n_revised` and add nothing to the deltas.
+**Limits.**
+- `months_after_period` is the age of the data **at the run**, not at AEAT publication; it is an upper bound.
+- The log only has one run so far (2026-10-28: July vs August vintage of the CSV). The 9 vanished rows of ADR-017 were never logged, because the run that logs them has not executed (no credits left), so the offline summary shows `n_vanished = 0` and understates the August revisions.
+- Absolute deltas add up gross changes: a +100 and a −100 on two origins of the same month show as 200, with a net of zero. Read the signed and the absolute columns together.
+**Rejected.** Percentage of affected rows only (a handful of tiny rows reach thousands of percent, see the 99th percentile in the 2026-10-29 findings); a grain without product (hides what the report is about).
+**Offline build.** `scripts/build_revisions_summary_offline.py` runs the same function on the exported log and the offline Silver and writes `data/gold_offline/revisions_summary.csv`. (The other Gold tables: `scripts/build_gold_offline.py`, ADR-020.)
+
+## ADR-020 — Country dimension and product-level price for the report (2026-11-09)
+**Context.** Before building the Power BI report, the Gold tables had two gaps: origins were bare AEAT codes (89 distinct, including special codes) and there was no product-level price. Averaging the origin-level price is wrong (it is blank below 1,000 t, ADR-016), and computing a ratio in DAX would break the rule that business logic lives in Gold (ADR-009).
+**Decision.**
+- `dim_country` (`country_code`, `country_name`, `is_country`) is built from the sheet *Clasif- Países* of the AEAT classifications workbook (`transforms/dim.py::country_rows`). Names stay as AEAT publishes them, in Spanish. `is_country` is False for the codes listed after the "Códigos especiales" row (`UE`, `XI`, `XU`, `QP`…`QZ`). All 89 origin codes in use have a row; three are special codes (`QU`, `QV`, `QW`).
+- `supply_concentration` gets `implied_price_eur_per_t` = total value / total tonnes over all origins of the month and product, blank below 1,000 t (same threshold as ADR-016).
+**Traps found in the workbook (all covered by tests).** A code cell can carry a footnote (`MK` appears as `MK  (1)`); `QA` is Qatar, so "starts with Q" is not a rule for special codes — the position after the marker row is; 253 codes in total.
+**Limits.**
+- Country names are Spanish only; there is no English or ISO-3166 name column.
+- For LNG, `origin_code` may be the country of provenance rather than origin (ADR-008 limitation); the dimension does not change that.
+- The product-level price is an average over all origins weighted by volume; it hides the spread between origins that the origin-level table shows.
+- The dimension is built offline for now (`scripts/build_gold_offline.py`); a notebook that reads it from the Bronze volume is part of the Databricks pass in `plan.md`.
+**Verification.** Rebuilding `energy_imports_monthly` and `supply_concentration` from the offline Silver with the repository functions reproduces the previous CSVs (2,935 and 276 rows, no differences); the only change is the new price column.
